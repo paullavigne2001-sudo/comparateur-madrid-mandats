@@ -103,23 +103,18 @@ def safe_int(value: Any) -> int | None:
 
 def canonical_supplier(no: Any, name: Any) -> str:
     supplier_name = norm_text(name)
+
+    # règle spéciale TVA
     if supplier_name == "TRESORIER TVA":
         return "TRESORIER TVA"
 
+    # règle principale : utiliser le numéro fournisseur
     supplier_no = norm_id(no)
     if supplier_no:
         return supplier_no
 
-    aliases = {
-        "DEDALUS PRIVATE HEALTHCAR": "DEDALUS",
-        "MAINCARE SOLUTIONS": "MAINCARE",
-        "MAINCARE SOLUTI": "MAINCARE",
-        "ENOVACOM GROUPE": "ENOVACOM",
-        "PHAST SERVICES": "PHAST",
-        "GEO SOFT AQUITAINE": "GEO SOFT",
-        "X GIL COMPAGNY": "X GIL COMPANY",
-    }
-    return aliases.get(supplier_name, supplier_name)
+    # secours si le numéro n'existe pas
+    return supplier_name
 
 
 @dataclass
@@ -486,14 +481,11 @@ def analyse(
         rem_mans = [r for j, r in enumerate(mans) if j not in used_man]
 
         # 3. splits : 1 mandat -> plusieurs fiches
-        for j, m in enumerate(rem_mans):
+        for m in rem_mans:
             candidate_fiches = [(i, f.amount) for i, f in enumerate(rem_mads) if f.supplier_key == m.supplier_key]
             subset = find_subset_sum_amounts(candidate_fiches, m.amount)
             if subset and len(subset) > 1:
                 fiche_refs = [rem_mads[i].fiche_ref for i in subset]
-                for i in subset:
-                    if rem_mads[i] in rem_mads:
-                        pass
                 matches.append(
                     MatchResult(
                         compte=account,
@@ -510,7 +502,7 @@ def analyse(
                 )
 
         # 4. regroupement : N mandats -> 1 fiche
-        for i, f in enumerate(rem_mads):
+        for f in rem_mads:
             candidate_mandats = [(j, m.amount) for j, m in enumerate(rem_mans) if m.supplier_key == f.supplier_key]
             subset = find_subset_sum_amounts(candidate_mandats, f.amount)
             if subset and len(subset) > 1:

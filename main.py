@@ -104,16 +104,13 @@ def safe_int(value: Any) -> int | None:
 def canonical_supplier(no: Any, name: Any) -> str:
     supplier_name = norm_text(name)
 
-    # règle spéciale TVA
     if supplier_name == "TRESORIER TVA":
         return "TRESORIER TVA"
 
-    # règle principale : utiliser le numéro fournisseur
     supplier_no = norm_id(no)
     if supplier_no:
         return supplier_no
 
-    # secours si le numéro n'existe pas
     return supplier_name
 
 
@@ -412,7 +409,7 @@ def analyse(
         used_mad: set[int] = set()
         used_man: set[int] = set()
 
-        # 1. match évident : même mandat + même montant
+        # 1. même mandat + même montant
         for i, f in enumerate(mads):
             for j, m in enumerate(mans):
                 if i in used_mad or j in used_man:
@@ -435,7 +432,7 @@ def analyse(
                         )
                     )
 
-        # 2. match probable : même fournisseur + même montant
+        # 2. même fournisseur + même montant
         for i, f in enumerate(mads):
             if i in used_mad:
                 continue
@@ -445,7 +442,6 @@ def analyse(
                 if f.supplier_key == m.supplier_key and same_amount(f.amount, m.amount):
                     used_mad.add(i)
                     used_man.add(j)
-                    score = 80
                     statut = "Mandat probablement erroné sur la fiche" if f.mandat != m.mandat else "Rapprochement probable"
                     matches.append(
                         MatchResult(
@@ -458,7 +454,7 @@ def analyse(
                             montant_madrid=f.amount,
                             montant_mandat=m.amount,
                             statut=statut,
-                            score_confiance=score,
+                            score_confiance=80,
                         )
                     )
                     if f.mandat != m.mandat:
@@ -477,50 +473,94 @@ def analyse(
                             )
                         )
 
+        # 3. split 1 mandat -> plusieurs fiches, AVEC CONSOMMATION
+        progress = True
+        while progress:
+            progress = False
+
+            rem_mads = [r for i, r in enumerate(mads) if i not in used_mad]
+            rem_mans = [r for j, r in enumerate(mans) if j not in used_man]
+
+            for man_idx, m in enumerate(rem_mans):
+                candidate_fiches = [
+                    (idx, f.amount) for idx, f in enumerate(rem_mads)
+                    if f.supplier_key == m.supplier_key
+                ]
+                subset = find_subset_sum_amounts(candidate_fiches, m.amount)
+
+                if subset and len(subset) > 1:
+                    fiche_refs = [rem_mads[idx].fiche_ref for idx in subset]
+                    matches.append(
+                        MatchResult(
+                            compte=account,
+                            etape="3. Split 1 mandat -> N fiches",
+                            fiche=", ".join(fiche_refs),
+                            mandat_madrid="",
+                            mandat_mandat=m.mandat_raw,
+                            fournisseur=m.supplier_name or m.supplier_key,
+                            montant_madrid=round(sum(rem_mads[idx].amount for idx in subset), 2),
+                            montant_mandat=m.amount,
+                            statut="Split détecté",
+                            score_confiance=75,
+                        )
+                    )
+
+                    original_m_index = mans.index(m)
+                    used_man.add(original_m_index)
+
+                    for idx in subset:
+                        original_f_index = mads.index(rem_mads[idx])
+                        used_mad.add(original_f_index)
+
+                    progress = True
+                    break
+
+        # 4. regroupement N mandats -> 1 fiche, AVEC CONSOMMATION
+        progress = True
+        while progress:
+            progress = False
+
+            rem_mads = [r for i, r in enumerate(mads) if i not in used_mad]
+            rem_mans = [r for j, r in enumerate(mans) if j not in used_man]
+
+            for f in rem_mads:
+                candidate_mandats = [
+                    (j, m.amount) for j, m in enumerate(rem_mans)
+                    if m.supplier_key == f.supplier_key
+                ]
+                subset = find_subset_sum_amounts(candidate_mandats, f.amount)
+
+                if subset and len(subset) > 1:
+                    mandat_refs = [rem_mans[j].mandat_raw for j in subset]
+
+                    matches.append(
+                        MatchResult(
+                            compte=account,
+                            etape="4. Regroupement N mandats -> 1 fiche",
+                            fiche=f.fiche_ref,
+                            mandat_madrid=f.mandat_raw,
+                            mandat_mandat=", ".join(mandat_refs),
+                            fournisseur=f.supplier_name or f.supplier_key,
+                            montant_madrid=f.amount,
+                            montant_mandat=round(sum(rem_mans[j].amount for j in subset), 2),
+                            statut="Regroupement détecté",
+                            score_confiance=75,
+                        )
+                    )
+
+                    original_f_index = mads.index(f)
+                    used_mad.add(original_f_index)
+
+                    for j in subset:
+                        original_m_index = mans.index(rem_mans[j])
+                        used_man.add(original_m_index)
+
+                    progress = True
+                    break
+
+        # recalcul final des restants après consommation
         rem_mads = [r for i, r in enumerate(mads) if i not in used_mad]
         rem_mans = [r for j, r in enumerate(mans) if j not in used_man]
-
-        # 3. splits : 1 mandat -> plusieurs fiches
-        for m in rem_mans:
-            candidate_fiches = [(i, f.amount) for i, f in enumerate(rem_mads) if f.supplier_key == m.supplier_key]
-            subset = find_subset_sum_amounts(candidate_fiches, m.amount)
-            if subset and len(subset) > 1:
-                fiche_refs = [rem_mads[i].fiche_ref for i in subset]
-                matches.append(
-                    MatchResult(
-                        compte=account,
-                        etape="3. Split 1 mandat -> N fiches",
-                        fiche=", ".join(fiche_refs),
-                        mandat_madrid="",
-                        mandat_mandat=m.mandat_raw,
-                        fournisseur=m.supplier_name or m.supplier_key,
-                        montant_madrid=round(sum(rem_mads[i].amount for i in subset), 2),
-                        montant_mandat=m.amount,
-                        statut="Split détecté",
-                        score_confiance=75,
-                    )
-                )
-
-        # 4. regroupement : N mandats -> 1 fiche
-        for f in rem_mads:
-            candidate_mandats = [(j, m.amount) for j, m in enumerate(rem_mans) if m.supplier_key == f.supplier_key]
-            subset = find_subset_sum_amounts(candidate_mandats, f.amount)
-            if subset and len(subset) > 1:
-                mandat_refs = [rem_mans[j].mandat_raw for j in subset]
-                matches.append(
-                    MatchResult(
-                        compte=account,
-                        etape="4. Regroupement N mandats -> 1 fiche",
-                        fiche=f.fiche_ref,
-                        mandat_madrid=f.mandat_raw,
-                        mandat_mandat=", ".join(mandat_refs),
-                        fournisseur=f.supplier_name or f.supplier_key,
-                        montant_madrid=f.amount,
-                        montant_mandat=round(sum(rem_mans[j].amount for j in subset), 2),
-                        statut="Regroupement détecté",
-                        score_confiance=75,
-                    )
-                )
 
         # 5. analyse résiduelle
         for f in rem_mads:

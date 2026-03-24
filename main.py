@@ -402,6 +402,10 @@ def analyse(
 
     accounts = sorted({r.account for r in madrid_rows} | {r.account for r in mandat_net})
 
+    # consommation pour filtrer la vision mandat
+    consumed_madrid_for_strict: set[tuple[str, str]] = set()
+    consumed_mandat_for_strict: set[tuple[str, str]] = set()
+
     for account in accounts:
         mads = [r for r in madrid_rows if r.account == account]
         mans = [r for r in mandat_net if r.account == account]
@@ -417,6 +421,8 @@ def analyse(
                 if f.mandat and m.mandat and f.mandat == m.mandat and same_amount(f.amount, m.amount):
                     used_mad.add(i)
                     used_man.add(j)
+                    consumed_madrid_for_strict.add((account, f.fiche_ref))
+                    consumed_mandat_for_strict.add((account, m.mandat_raw))
                     matches.append(
                         MatchResult(
                             compte=account,
@@ -442,6 +448,8 @@ def analyse(
                 if f.supplier_key == m.supplier_key and same_amount(f.amount, m.amount):
                     used_mad.add(i)
                     used_man.add(j)
+                    consumed_madrid_for_strict.add((account, f.fiche_ref))
+                    consumed_mandat_for_strict.add((account, m.mandat_raw))
                     statut = "Mandat probablement erroné sur la fiche" if f.mandat != m.mandat else "Rapprochement probable"
                     matches.append(
                         MatchResult(
@@ -481,7 +489,7 @@ def analyse(
             rem_mads = [r for i, r in enumerate(mads) if i not in used_mad]
             rem_mans = [r for j, r in enumerate(mans) if j not in used_man]
 
-            for man_idx, m in enumerate(rem_mans):
+            for m in rem_mans:
                 candidate_fiches = [
                     (idx, f.amount) for idx, f in enumerate(rem_mads)
                     if f.supplier_key == m.supplier_key
@@ -507,10 +515,12 @@ def analyse(
 
                     original_m_index = mans.index(m)
                     used_man.add(original_m_index)
+                    consumed_mandat_for_strict.add((account, m.mandat_raw))
 
                     for idx in subset:
                         original_f_index = mads.index(rem_mads[idx])
                         used_mad.add(original_f_index)
+                        consumed_madrid_for_strict.add((account, rem_mads[idx].fiche_ref))
 
                     progress = True
                     break
@@ -550,15 +560,16 @@ def analyse(
 
                     original_f_index = mads.index(f)
                     used_mad.add(original_f_index)
+                    consumed_madrid_for_strict.add((account, f.fiche_ref))
 
                     for j in subset:
                         original_m_index = mans.index(rem_mans[j])
                         used_man.add(original_m_index)
+                        consumed_mandat_for_strict.add((account, rem_mans[j].mandat_raw))
 
                     progress = True
                     break
 
-        # recalcul final des restants après consommation
         rem_mads = [r for i, r in enumerate(mads) if i not in used_mad]
         rem_mans = [r for j, r in enumerate(mans) if j not in used_man]
 
@@ -715,10 +726,13 @@ def analyse(
         man_amt = strict_mandat.get(key, 0.0)
         gap = round(mad_amt - man_amt, 2)
         account, mandat, supplier, invoice, operation = key
+        strict_mandat_ref = strict_mandat_raw.get(key, mandat or "(vide)")
+        strict_fiche_ref = strict_fiche_refs.get(key, "")
+
         strict_rows.append(
             {
                 "compte": account,
-                "mandat": strict_mandat_raw.get(key, mandat or "(vide)"),
+                "mandat": strict_mandat_ref,
                 "fournisseur": supplier,
                 "facture": invoice or "-",
                 "operation": operation or "-",
@@ -727,7 +741,13 @@ def analyse(
                 "ecart": gap,
             }
         )
-        if not same_amount(gap, 0.0):
+
+        is_consumed_by_metier = (
+            (account, strict_mandat_ref) in consumed_mandat_for_strict
+            or any((account, f.strip()) in consumed_madrid_for_strict for f in strict_fiche_ref.split(",") if f.strip())
+        )
+
+        if not same_amount(gap, 0.0) and not is_consumed_by_metier:
             anomalies.append(
                 Anomaly(
                     priorite="Info",
@@ -735,8 +755,8 @@ def analyse(
                     compte=account,
                     type="Écart technique mandat",
                     impact=gap,
-                    cle=strict_mandat_raw.get(key, mandat or "(vide)"),
-                    ref_fiche=strict_fiche_refs.get(key, ""),
+                    cle=strict_mandat_ref,
+                    ref_fiche=strict_fiche_ref,
                     constat="Écart sur la clé stricte mandat/fournisseur/facture/opération.",
                     action="Contrôler le rattachement strict du mandat.",
                     detail=f"MADRID {mad_amt:.2f} - MANDATS {man_amt:.2f} = {gap:.2f}",
